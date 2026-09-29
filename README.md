@@ -1,16 +1,19 @@
 
+
 <div align="center">
  <h1>LocalDrop 🌐</h1>
 </div>
 
-A lightweight, local-network file-sharing web application inspired by tools like LocalDrop and LocalSend. It allows devices connected to the same Wi-Fi network to automatically discover each other in real-time, customize their device names, and securely transfer files directly browser-to-browser (P2P) without needing an active internet connection.
+A lightweight, local-network file-sharing web application inspired by tools like LocalSend. It allows devices connected to the same Wi-Fi network to automatically discover each other in real-time, customize their device names, securely authorize connection requests, and stream files directly browser-to-browser (P2P) without needing an active internet connection.
 
 ---
 
 ## ✨ Features
 
-- **Automatic Local Discovery:** Instantly lists all devices currently connected to the web page on your local network using WebSockets.
-- **Peer-to-Peer (P2P) File Transfer:** Files are streamed directly between devices using WebRTC Data Channels (no server file-upload bottlenecks).
+- **Automatic Local Discovery:** Instantly lists all devices currently connected on your local network using WebSockets.
+- **Secure AirDrop-Style Handshake:** Clicking a peer triggers a connection request modal on their screen with file details, requiring explicit acceptance before any transfer occurs.
+- **Peer-to-Peer (P2P) File Transfer:** Files are streamed directly between devices using WebRTC Data Channels (no server file-upload bottlenecks or size limits).
+- **Smooth Progress Tracking:** Real-time progress bars show transfer percentages and live status updates for both sending and receiving files.
 - **Random Codenames:** Automatically generates fun default names (e.g., *Cosmic Panda 42*) on first visit and persists them using `localStorage`.
 - **Customizable Identity:** Users can easily rename their device or roll a new random codename on the fly.
 - **Responsive & Modern UI:** Built with Tailwind CSS for a sleek, dark-mode-first aesthetic.
@@ -27,7 +30,7 @@ A lightweight, local-network file-sharing web application inspired by tools like
 ## 🛠️ Tech Stack
 
 - **Backend:** Node.js, Express, Socket.io
-- **Frontend:** HTML5, Tailwind CSS, WebRTC, JavaScript
+- **Frontend:** HTML5, Tailwind CSS, WebRTC Data Channels, JavaScript
 
 ---
 

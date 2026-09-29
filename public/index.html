@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LocalDrop - Network File Share</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col items-center justify-between p-4">
+
+    <!-- Spacer to help center the card vertically -->
+    <div></div>
+
+    <div class="max-w-md w-full bg-slate-800 border border-slate-700 rounded-2xl p-6 shadow-xl">
+        <h1 class="text-2xl font-bold text-center mb-2">LocalDrop 🌐</h1>
+        <p class="text-slate-400 text-sm text-center mb-6">Discovered devices on your local network</p>
+
+        <!-- Device Name Input with Edit / Randomize Controls -->
+        <div class="mb-4">
+            <div class="flex justify-between items-center mb-1">
+                <label class="block text-xs uppercase tracking-wider text-slate-400">Your Device Name</label>
+                <button onclick="generateNewRandomName()" class="text-xs text-indigo-400 hover:text-indigo-300 underline cursor-pointer">🎲 Roll New Name</button>
+            </div>
+            <div class="flex gap-2">
+                <input type="text" id="deviceName" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-500 font-medium">
+                <button onclick="saveDeviceName()" class="bg-indigo-600 hover:bg-indigo-500 text-xs px-4 rounded-lg font-medium transition cursor-pointer">Save</button>
+            </div>
+        </div>
+
+        <!-- Transfer Status Area -->
+        <div id="statusArea" class="hidden mb-4 p-3 bg-indigo-950/60 border border-indigo-500/40 rounded-xl text-xs text-indigo-200 text-center">
+            <span id="statusText">Preparing transfer...</span>
+        </div>
+
+        <!-- Discovered Devices List -->
+        <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-3">Active Peers (<span id="peerCount">0</span>)</h2>
+        <div id="deviceList" class="space-y-3">
+            <div class="text-slate-500 text-sm text-center py-4 bg-slate-900/50 rounded-lg border border-dashed border-slate-700">
+                Searching for local devices...
+            </div>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="text-xs text-slate-500 py-2">
+        Created with <span class="text-rose-500">❤️</span> by <a href="https://github.com/Wilfred1097" target="_blank" class="text-indigo-400 hover:text-indigo-300 underline font-medium" style="text-decoration: none;">Wil Fred</a>
+    </footer>
+
+    <!-- Hidden file input -->
+    <input type="file" id="fileInput" class="hidden">
+
+    <!-- Socket.io Client Script -->
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+
+        const deviceNameInput = document.getElementById('deviceName');
+        const deviceListEl = document.getElementById('deviceList');
+        const peerCountEl = document.getElementById('peerCount');
+        const fileInput = document.getElementById('fileInput');
+        const statusArea = document.getElementById('statusArea');
+        const statusText = document.getElementById('statusText');
+
+        let targetPeerId = null;
+        let pc = null;
+        let dataChannel = null;
+
+        const rtcConfig = {
+            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        };
+
+        // --- Fun Random Name Generator Lists ---
+        const adjectives = ['Cosmic', 'Swift', 'Silent', 'Clever', 'Brave', 'Mighty', 'Hidden', 'Neon', 'Cyber', 'Epic', 'Chill', 'Hyper'];
+        const nouns = ['Badger', 'Panda', 'Falcon', 'Tiger', 'Ninja', 'Wizard', 'Phoenix', 'Ghost', 'Viking', 'Nomad', 'Panther', 'Robot'];
+
+        function getRandomName() {
+            const adj = adjectives[Math.floor(Math.random() * adjectives.length)];
+            const noun = nouns[Math.floor(Math.random() * nouns.length)];
+            const num = Math.floor(Math.random() * 90) + 10; // 2-digit suffix
+            return `${adj} ${noun} ${num}`;
+        }
+
+        // Initialize Name (Load from localStorage or generate a new one)
+        function initName() {
+            let savedName = localStorage.getItem('localdrop_device_name');
+            if (!savedName) {
+                savedName = getRandomName();
+                localStorage.setItem('localdrop_device_name', savedName);
+            }
+            deviceNameInput.value = savedName;
+        }
+
+        function generateNewRandomName() {
+            const newName = getRandomName();
+            deviceNameInput.value = newName;
+            saveDeviceName();
+        }
+
+        function saveDeviceName() {
+            const name = deviceNameInput.value.trim() || 'Anonymous Device';
+            localStorage.setItem('localdrop_device_name', name);
+            register(); // Re-register with the server using the updated name
+            
+            const activeInput = document.activeElement;
+            if(activeInput && activeInput.tagName === 'BUTTON') {
+                const originalText = activeInput.textContent;
+                activeInput.textContent = 'Saved!';
+                setTimeout(() => activeInput.textContent = originalText, 1500);
+            }
+        }
+
+        deviceNameInput.addEventListener('blur', saveDeviceName);
+
+        function getDeviceType() {
+            const ua = navigator.userAgent;
+            if (/android/i.test(ua)) return 'Android Phone';
+            if (/iphone|ipad|ipod/i.test(ua)) return 'iOS Device';
+            if (/windows/i.test(ua)) return 'Windows PC';
+            if (/macintosh|mac os x/i.test(ua)) return 'Mac';
+            return 'Web Browser';
+        }
+
+        function register() {
+            socket.emit('register-device', {
+                name: deviceNameInput.value || 'Anonymous',
+                type: getDeviceType()
+            });
+        }
+
+        initName();
+        socket.on('connect', register);
+
+        // Render Peers
+        socket.on('update-device-list', (devices) => {
+            peerCountEl.textContent = devices.length;
+            if (devices.length <= 1) {
+                deviceListEl.innerHTML = `<div class="text-slate-500 text-sm text-center py-4 bg-slate-900/50 rounded-lg border border-dashed border-slate-700">No other devices found. Open this page on another device!</div>`;
+                return;
+            }
+
+            deviceListEl.innerHTML = '';
+            devices.forEach(device => {
+                const isSelf = device.id === socket.id;
+                const card = document.createElement('div');
+                card.className = `p-3 rounded-xl border flex items-center justify-between ${isSelf ? 'bg-indigo-950/40 border-indigo-500/40' : 'bg-slate-900 border-slate-700'}`;
+                
+                card.innerHTML = `
+                    <div>
+                        <div class="font-medium text-sm flex items-center gap-2">
+                            ${device.name} ${isSelf ? '<span class="text-xs bg-indigo-500/20 text-indigo-300 px-1.5 py-0.5 rounded">You</span>' : ''}
+                        </div>
+                        <div class="text-xs text-slate-400">${device.type} • ${device.ip}</div>
+                    </div>
+                    ${!isSelf ? `<button onclick="initiateSend('${device.id}')" class="bg-indigo-600 hover:bg-indigo-500 text-xs px-3 py-1.5 rounded-lg font-medium transition cursor-pointer">Send File</button>` : ''}
+                `;
+                deviceListEl.appendChild(card);
+            });
+        });
+
+        // --- WebRTC File Transfer Logic ---
+
+        function initiateSend(peerId) {
+            targetPeerId = peerId;
+            fileInput.click();
+        }
+
+        fileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file || !targetPeerId) return;
+
+            statusArea.classList.remove('hidden');
+            statusText.textContent = `Connecting to peer to send ${file.name}...`;
+
+            pc = new RTCPeerConnection(rtcConfig);
+            dataChannel = pc.createDataChannel('file-transfer');
+            setupDataChannelSender(file);
+
+            pc.onicecandidate = (event) => {
+                if (event.candidate) {
+                    socket.emit('ice-candidate', { to: targetPeerId, candidate: event.candidate });
+                }
+            };
+
+            pc.createOffer().then(offer => {
+                pc.setLocalDescription(offer);
+                socket.emit('rtc-offer', { to: targetPeerId, offer });
+            });
+        });
+
+        socket.on('rtc-offer', async ({ from, offer }) => {
+            targetPeerId = from;
+            pc = new RTCPeerConnection(rtcConfig);
+
+            pc.onicecandidate = (event) => {
+                if (event.candidate) {
+                    socket.emit('ice-candidate', { to: targetPeerId, candidate: event.candidate });
+                }
+            };
+
+            pc.ondatachannel = (event) => {
+                dataChannel = event.channel;
+                setupDataChannelReceiver();
+            };
+
+            await pc.setRemoteDescription(new RTCSessionDescription(offer));
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            socket.emit('rtc-answer', { to: targetPeerId, answer });
+        });
+
+        socket.on('rtc-answer', async ({ answer }) => {
+            await pc.setRemoteDescription(new RTCSessionDescription(answer));
+        });
+
+        socket.on('ice-candidate', async ({ candidate }) => {
+            if (pc) {
+                await pc.addIceCandidate(new RTCIceCandidate(candidate));
+            }
+        });
+
+        function setupDataChannelSender(file) {
+            dataChannel.onopen = () => {
+                statusText.textContent = `Sending ${file.name} (${(file.size/1024/1024).toFixed(2)} MB)...`;
+                
+                dataChannel.send(JSON.stringify({ name: file.name, size: file.size, type: file.type }));
+
+                const chunkSize = 16384;
+                const reader = new FileReader();
+                let offset = 0;
+
+                reader.onload = (e) => {
+                    dataChannel.send(e.target.result);
+                    offset += e.target.result.byteLength;
+                    
+                    const progress = Math.round((offset / file.size) * 100);
+                    statusText.textContent = `Sending... ${progress}%`;
+
+                    if (offset < file.size) {
+                        readNextChunk();
+                    } else {
+                        statusText.textContent = `File sent successfully! 🎉`;
+                        setTimeout(() => statusArea.classList.add('hidden'), 4000);
+                    }
+                };
+
+                function readNextChunk() {
+                    const slice = file.slice(offset, offset + chunkSize);
+                    reader.readAsArrayBuffer(slice);
+                }
+
+                readNextChunk();
+            };
+        }
+
+        let incomingFile = {};
+        let receivedBuffer = [];
+        let receivedSize = 0;
+
+        function setupDataChannelReceiver() {
+            statusArea.classList.remove('hidden');
+            statusText.textContent = `Connected! Waiting for incoming file...`;
+
+            dataChannel.onmessage = (event) => {
+                if (typeof event.data === 'string') {
+                    incomingFile = JSON.parse(event.data);
+                    receivedBuffer = [];
+                    receivedSize = 0;
+                    statusText.textContent = `Receiving ${incomingFile.name}...`;
+                } else {
+                    receivedBuffer.push(event.data);
+                    receivedSize += event.data.byteLength;
+
+                    const progress = Math.round((receivedSize / incomingFile.size) * 100);
+                    statusText.textContent = `Receiving... ${progress}%`;
+
+                    if (receivedSize === incomingFile.size) {
+                        const blob = new Blob(receivedBuffer, { type: incomingFile.type });
+                        const url = URL.createObjectURL(blob);
+                        
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = incomingFile.name;
+                        a.click();
+
+                        statusText.textContent = `Received ${incomingFile.name} successfully! 📥`;
+                        setTimeout(() => statusArea.classList.add('hidden'), 4000);
+                    }
+                }
+            };
+        }
+    </script>
+</body>
+</html>

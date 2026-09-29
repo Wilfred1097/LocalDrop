@@ -1,35 +1,54 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-const os = require('os');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-// Serve static files from the 'public' folder
+// Use a Map or an object to track connected devices by socket.id
+const activeDevices = new Map();
+
 app.use(express.static('public'));
 
-// Store connected devices
-const connectedDevices = {};
-
 io.on('connection', (socket) => {
-    console.log(`Client connected: ${socket.id}`);
+    console.log('A user connected:', socket.id);
 
-    // Listen for device registration with custom details
-    socket.on('register-device', (deviceInfo) => {
-        connectedDevices[socket.id] = {
-            id: socket.id,
-            name: deviceInfo.name || 'Anonymous Device',
-            type: deviceInfo.type || 'Browser',
-            ip: socket.handshake.address.replace('::ffff:', '') // Clean up IPv4 formatting
-        };
+    // 1. When a device registers its name and type
+    socket.on('register-device', (data) => {
+        const clientIp = socket.handshake.address.replace(/^.*:/, ''); // clean IP
         
-        // Broadcast updated device list to ALL connected clients
-        io.emit('update-device-list', Object.values(connectedDevices));
+        // Save device info mapped directly to socket.id
+        activeDevices.set(socket.id, {
+            id: socket.id,
+            name: data.name,
+            type: data.type,
+            ip: clientIp === '1' ? '127.0.0.1' : clientIp
+        });
+
+        broadcastDeviceList();
     });
 
-    // WebRTC Signaling relays
+    // 2. Handle connection request and grab the name accurately
+    socket.on('connection-request', ({ to, fileName, fileSize }) => {
+        const sender = activeDevices.get(socket.id);
+        const senderName = sender ? sender.name : 'Unknown Device';
+
+        console.log(`Connection request from ${senderName} (${socket.id}) to ${to}`);
+
+        io.to(to).emit('connection-request', { 
+            from: socket.id, 
+            senderName: senderName, 
+            fileName, 
+            fileSize 
+        });
+    });
+
+    socket.on('connection-response', ({ to, accepted }) => {
+        io.to(to).emit('connection-response', { accepted });
+    });
+
+    // Handle WebRTC signaling
     socket.on('rtc-offer', ({ to, offer }) => {
         io.to(to).emit('rtc-offer', { from: socket.id, offer });
     });
@@ -42,31 +61,19 @@ io.on('connection', (socket) => {
         io.to(to).emit('ice-candidate', { from: socket.id, candidate });
     });
 
-    // Handle disconnection
+    // Clean up on disconnect
     socket.on('disconnect', () => {
-        console.log(`Client disconnected: ${socket.id}`);
-        delete connectedDevices[socket.id];
-        io.emit('update-device-list', Object.values(connectedDevices));
+        activeDevices.delete(socket.id);
+        broadcastDeviceList();
+        console.log('A user disconnected:', socket.id);
     });
 });
 
-// Helper function to find your local network IP
-function getLocalIP() {
-    const interfaces = os.networkInterfaces();
-    for (const name of Object.keys(interfaces)) {
-        for (const net of interfaces[name]) {
-            if (net.family === 'IPv4' && !net.internal) {
-                return net.address;
-            }
-        }
-    }
-    return 'localhost';
+function broadcastDeviceList() {
+    const devices = Array.from(activeDevices.values());
+    io.emit('update-device-list', devices);
 }
 
-const PORT = 3000;
-server.listen(PORT, '0.0.0.0', () => {
-    const localIP = getLocalIP();
-    console.log(`🚀 LocalDrop server running!`);
-    console.log(`> Open on this machine: http://localhost:${PORT}`);
-    console.log(`> Open on other network devices: http://${localIP}:${PORT}`);
+server.ensureListen = server.listen(3000, () => {
+    console.log('LocalDrop server running on http://localhost:3000');
 });

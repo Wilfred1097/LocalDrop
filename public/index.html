@@ -6,7 +6,7 @@
     <title>LocalDrop - Network File Share</title>
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
 </head>
-<body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col items-center justify-between p-4">
+<body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col items-center justify-between p-4 relative">
 
     <!-- Spacer to help center the card vertically -->
     <div></div>
@@ -27,9 +27,16 @@
             </div>
         </div>
 
-        <!-- Transfer Status Area -->
-        <div id="statusArea" class="hidden mb-4 p-3 bg-indigo-950/60 border border-indigo-500/40 rounded-xl text-xs text-indigo-200 text-center">
-            <span id="statusText">Preparing transfer...</span>
+        <!-- Progress Bar & Status Area -->
+        <div id="statusArea" class="hidden mb-4 p-4 bg-slate-900 border border-slate-700 rounded-xl">
+            <div class="flex justify-between text-xs text-slate-300 mb-2">
+                <span id="statusText" class="font-medium truncate max-w-[220px]">Preparing transfer...</span>
+                <span id="progressPercentage" class="font-bold text-indigo-400">0%</span>
+            </div>
+            <!-- Progress Track -->
+            <div class="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
+                <div id="progressBar" class="bg-indigo-600 h-2 rounded-full transition-all duration-150 w-0"></div>
+            </div>
         </div>
 
         <!-- Discovered Devices List -->
@@ -41,9 +48,22 @@
         </div>
     </div>
 
+    <!-- Incoming Connection Request Modal -->
+    <div id="requestModal" class="fixed inset-0 bg-black/70 backdrop-blur-sm hidden flex items-center justify-center p-4 z-50">
+        <div class="bg-slate-800 border border-slate-700 rounded-2xl max-w-sm w-full p-6 shadow-2xl text-center">
+            <div class="w-12 h-12 bg-indigo-500/20 text-indigo-400 rounded-full flex items-center justify-center mx-auto mb-3 text-xl font-bold">📁</div>
+            <h3 class="text-lg font-bold mb-1">Incoming File Request</h3>
+            <p id="requestDetails" class="text-sm text-slate-400 mb-6">Device wants to send you a file.</p>
+            <div class="flex gap-3">
+                <button onclick="rejectConnection()" class="flex-1 bg-slate-700 hover:bg-slate-600 text-xs py-2.5 rounded-xl font-medium transition cursor-pointer">Decline</button>
+                <button onclick="acceptConnection()" class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-xs py-2.5 rounded-xl font-medium transition cursor-pointer">Accept</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Footer -->
-    <footer class="text-xs text-slate-500 py-2">
-        Created with <span class="text-rose-500">❤️</span> by <a href="https://github.com/Wilfred1097" target="_blank" class="text-indigo-400 hover:text-indigo-300 underline font-medium" style="text-decoration: none;">Wil Fred</a>
+    <footer class="text-xs text-slate-500 py-2 flex items-center gap-1">
+        Created with <span class="text-rose-500">❤️</span> by <a href="https://github.com/Wilfred1097" target="_blank" class="text-indigo-400 hover:text-indigo-300 underline font-medium">Wil Fred</a>
     </footer>
 
     <!-- Hidden file input -->
@@ -53,34 +73,46 @@
     <script src="/socket.io/socket.io.js"></script>
     <script>
         const socket = io();
+        let candidateQueue = [];
 
         const deviceNameInput = document.getElementById('deviceName');
         const deviceListEl = document.getElementById('deviceList');
         const peerCountEl = document.getElementById('peerCount');
         const fileInput = document.getElementById('fileInput');
+        
+        // Modal elements
+        const requestModal = document.getElementById('requestModal');
+        const requestDetails = document.getElementById('requestDetails');
+
+        // Progress elements
         const statusArea = document.getElementById('statusArea');
         const statusText = document.getElementById('statusText');
+        const progressBar = document.getElementById('progressBar');
+        const progressPercentage = document.getElementById('progressPercentage');
 
         let targetPeerId = null;
+        let selectedFile = null;
         let pc = null;
         let dataChannel = null;
 
         const rtcConfig = {
-            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+                { urls: 'stun:stun.stunprotocol.org:3478' }
+            ]
         };
 
-        // --- Fun Random Name Generator Lists ---
         const adjectives = ['Cosmic', 'Swift', 'Silent', 'Clever', 'Brave', 'Mighty', 'Hidden', 'Neon', 'Cyber', 'Epic', 'Chill', 'Hyper'];
         const nouns = ['Badger', 'Panda', 'Falcon', 'Tiger', 'Ninja', 'Wizard', 'Phoenix', 'Ghost', 'Viking', 'Nomad', 'Panther', 'Robot'];
 
         function getRandomName() {
             const adj = adjectives[Math.floor(Math.random() * adjectives.length)];
             const noun = nouns[Math.floor(Math.random() * nouns.length)];
-            const num = Math.floor(Math.random() * 90) + 10; // 2-digit suffix
+            const num = Math.floor(Math.random() * 90) + 10;
             return `${adj} ${noun} ${num}`;
         }
 
-        // Initialize Name (Load from localStorage or generate a new one)
         function initName() {
             let savedName = localStorage.getItem('localdrop_device_name');
             if (!savedName) {
@@ -99,7 +131,7 @@
         function saveDeviceName() {
             const name = deviceNameInput.value.trim() || 'Anonymous Device';
             localStorage.setItem('localdrop_device_name', name);
-            register(); // Re-register with the server using the updated name
+            register();
             
             const activeInput = document.activeElement;
             if(activeInput && activeInput.tagName === 'BUTTON') {
@@ -130,7 +162,6 @@
         initName();
         socket.on('connect', register);
 
-        // Render Peers
         socket.on('update-device-list', (devices) => {
             peerCountEl.textContent = devices.length;
             if (devices.length <= 1) {
@@ -157,23 +188,77 @@
             });
         });
 
-        // --- WebRTC File Transfer Logic ---
+        function updateProgress(percent, text) {
+            statusArea.classList.remove('hidden');
+            progressBar.style.width = `${percent}%`;
+            progressPercentage.textContent = `${percent}%`;
+            if (text) statusText.textContent = text;
+        }
 
+        // --- Step 1: User clicks "Send File" ---
         function initiateSend(peerId) {
             targetPeerId = peerId;
             fileInput.click();
         }
 
+        // When a file is chosen, send a request to the target peer first
         fileInput.addEventListener('change', (e) => {
-            const file = e.target.files[0];
-            if (!file || !targetPeerId) return;
+            selectedFile = e.target.files[0];
+            if (!selectedFile || !targetPeerId) return;
 
-            statusArea.classList.remove('hidden');
-            statusText.textContent = `Connecting to peer to send ${file.name}...`;
+            updateProgress(0, `Waiting for recipient to accept...`);
+            
+            // Emit connection request with file metadata
+            socket.emit('connection-request', {
+                to: targetPeerId,
+                fileName: selectedFile.name,
+                fileSize: selectedFile.size
+            });
+        });
+
+        // --- Step 2: Recipient receives connection request ---
+        let incomingRequestFrom = null;
+
+        socket.on('connection-request', ({ from, senderName, fileName, fileSize }) => {
+            incomingRequestFrom = from;
+            const sizeMB = (fileSize / (1024 * 1024)).toFixed(2);
+            
+            // Fallback to "A peer" if senderName is missing/undefined
+            const nameToDisplay = senderName || 'A peer';
+            
+            requestDetails.textContent = `"${nameToDisplay}" wants to send you "${fileName}" (${sizeMB} MB). Do you accept?`;
+            requestModal.classList.remove('hidden');
+        });
+
+        function acceptConnection() {
+            requestModal.classList.add('hidden');
+            socket.emit('connection-response', { to: incomingRequestFrom, accepted: true });
+        }
+
+        function rejectConnection() {
+            requestModal.classList.add('hidden');
+            socket.emit('connection-response', { to: incomingRequestFrom, accepted: false });
+        }
+
+        // --- Step 3: Sender handles response ---
+        socket.on('connection-response', ({ accepted }) => {
+            if (!accepted) {
+                updateProgress(0, `❌ Request rejected by recipient.`);
+                setTimeout(() => statusArea.classList.add('hidden'), 4000);
+                return;
+            }
+
+            // If accepted, kick off WebRTC offer!
+            updateProgress(0, `Connecting to send ${selectedFile.name}...`);
+            candidateQueue = [];
 
             pc = new RTCPeerConnection(rtcConfig);
-            dataChannel = pc.createDataChannel('file-transfer');
-            setupDataChannelSender(file);
+
+            pc.oniceconnectionstatechange = () => console.log("ICE Connection State:", pc.iceConnectionState);
+            pc.onconnectionstatechange = () => console.log("Peer Connection State:", pc.connectionState);
+
+            dataChannel = pc.createDataChannel('file-transfer', { ordered: true });
+            setupDataChannelSender(selectedFile);
 
             pc.onicecandidate = (event) => {
                 if (event.candidate) {
@@ -187,9 +272,14 @@
             });
         });
 
+        // --- Step 4: WebRTC Handshake & File Transfer ---
         socket.on('rtc-offer', async ({ from, offer }) => {
             targetPeerId = from;
+            candidateQueue = [];
             pc = new RTCPeerConnection(rtcConfig);
+
+            pc.oniceconnectionstatechange = () => console.log("ICE Connection State:", pc.iceConnectionState);
+            pc.onconnectionstatechange = () => console.log("Peer Connection State:", pc.connectionState);
 
             pc.onicecandidate = (event) => {
                 if (event.candidate) {
@@ -203,6 +293,11 @@
             };
 
             await pc.setRemoteDescription(new RTCSessionDescription(offer));
+            
+            while (candidateQueue.length > 0) {
+                await pc.addIceCandidate(candidateQueue.shift());
+            }
+
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
             socket.emit('rtc-answer', { to: targetPeerId, answer });
@@ -210,21 +305,31 @@
 
         socket.on('rtc-answer', async ({ answer }) => {
             await pc.setRemoteDescription(new RTCSessionDescription(answer));
+            
+            while (candidateQueue.length > 0) {
+                await pc.addIceCandidate(candidateQueue.shift());
+            }
         });
 
         socket.on('ice-candidate', async ({ candidate }) => {
-            if (pc) {
-                await pc.addIceCandidate(new RTCIceCandidate(candidate));
+            if (pc && pc.remoteDescription && pc.remoteDescription.type) {
+                try {
+                    await pc.addIceCandidate(new RTCIceCandidate(candidate));
+                } catch (e) {
+                    console.error("Error adding received ice candidate", e);
+                }
+            } else {
+                candidateQueue.push(new RTCIceCandidate(candidate));
             }
         });
 
         function setupDataChannelSender(file) {
             dataChannel.onopen = () => {
-                statusText.textContent = `Sending ${file.name} (${(file.size/1024/1024).toFixed(2)} MB)...`;
+                updateProgress(0, `Sending: ${file.name}`);
                 
                 dataChannel.send(JSON.stringify({ name: file.name, size: file.size, type: file.type }));
 
-                const chunkSize = 16384;
+                const chunkSize = 65536;
                 const reader = new FileReader();
                 let offset = 0;
 
@@ -232,14 +337,14 @@
                     dataChannel.send(e.target.result);
                     offset += e.target.result.byteLength;
                     
-                    const progress = Math.round((offset / file.size) * 100);
-                    statusText.textContent = `Sending... ${progress}%`;
+                    const progress = Math.min(100, Math.round((offset / file.size) * 100));
+                    updateProgress(progress, `Sending: ${file.name}`);
 
                     if (offset < file.size) {
                         readNextChunk();
                     } else {
-                        statusText.textContent = `File sent successfully! 🎉`;
-                        setTimeout(() => statusArea.classList.add('hidden'), 4000);
+                        updateProgress(100, `Sent ${file.name} successfully! 🎉`);
+                        setTimeout(() => statusArea.classList.add('hidden'), 5000);
                     }
                 };
 
@@ -257,21 +362,20 @@
         let receivedSize = 0;
 
         function setupDataChannelReceiver() {
-            statusArea.classList.remove('hidden');
-            statusText.textContent = `Connected! Waiting for incoming file...`;
+            updateProgress(0, `Connected! Waiting for file...`);
 
             dataChannel.onmessage = (event) => {
                 if (typeof event.data === 'string') {
                     incomingFile = JSON.parse(event.data);
                     receivedBuffer = [];
                     receivedSize = 0;
-                    statusText.textContent = `Receiving ${incomingFile.name}...`;
+                    updateProgress(0, `Receiving: ${incomingFile.name}`);
                 } else {
                     receivedBuffer.push(event.data);
                     receivedSize += event.data.byteLength;
 
-                    const progress = Math.round((receivedSize / incomingFile.size) * 100);
-                    statusText.textContent = `Receiving... ${progress}%`;
+                    const progress = Math.min(100, Math.round((receivedSize / incomingFile.size) * 100));
+                    updateProgress(progress, `Receiving: ${incomingFile.name}`);
 
                     if (receivedSize === incomingFile.size) {
                         const blob = new Blob(receivedBuffer, { type: incomingFile.type });
@@ -282,8 +386,8 @@
                         a.download = incomingFile.name;
                         a.click();
 
-                        statusText.textContent = `Received ${incomingFile.name} successfully! 📥`;
-                        setTimeout(() => statusArea.classList.add('hidden'), 4000);
+                        updateProgress(100, `Received ${incomingFile.name} successfully! 📥`);
+                        setTimeout(() => statusArea.classList.add('hidden'), 5000);
                     }
                 }
             };
